@@ -17,11 +17,12 @@
 package main
 
 import (
-	"github.com/froghub-io/filecoin-sealer-recover/export"
-	"github.com/froghub-io/filecoin-sealer-recover/recovery"
+	"os"
+
 	logging "github.com/ipfs/go-log/v2"
 	"github.com/urfave/cli/v2"
-	"os"
+	"github.com/w1259980480/filecoin-sealer-recover/export"
+	"github.com/w1259980480/filecoin-sealer-recover/recovery"
 )
 
 var log = logging.Logger("sealer-recover-main")

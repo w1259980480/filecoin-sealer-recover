@@ -17,21 +17,11 @@
 package recovery
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/filecoin-project/go-address"
-	"github.com/filecoin-project/go-state-types/abi"
-	cliutil "github.com/filecoin-project/lotus/cli/util"
-	nr "github.com/filecoin-project/lotus/storage/pipeline/lib/nullreader"
-	"github.com/filecoin-project/lotus/storage/sealer/ffiwrapper"
-	"github.com/filecoin-project/lotus/storage/sealer/ffiwrapper/basicfs"
-	"github.com/filecoin-project/lotus/storage/sealer/storiface"
-	"github.com/w1259980480/filecoin-sealer-recover/export"
-	logging "github.com/ipfs/go-log/v2"
-	"github.com/mitchellh/go-homedir"
-	"github.com/urfave/cli/v2"
-	"golang.org/x/xerrors"
+	"io"
 	"io/ioutil"
 	"math/rand"
 	"os"
@@ -39,6 +29,19 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/filecoin-project/go-address"
+	"github.com/filecoin-project/go-state-types/abi"
+	cliutil "github.com/filecoin-project/lotus/cli/util"
+	"github.com/filecoin-project/lotus/storage/sealer/ffiwrapper"
+	"github.com/filecoin-project/lotus/storage/sealer/ffiwrapper/basicfs"
+	"github.com/filecoin-project/lotus/storage/sealer/storiface"
+	logging "github.com/ipfs/go-log/v2"
+	"github.com/ipld/go-car"
+	"github.com/mitchellh/go-homedir"
+	"github.com/urfave/cli/v2"
+	"github.com/w1259980480/filecoin-sealer-recover/export"
+	"golang.org/x/xerrors"
 )
 
 var log = logging.Logger("recover")
@@ -153,7 +156,6 @@ func migrateRecoverMeta(ctx context.Context, metadata string) (export.RecoveryPa
 
 	return rp, nil
 }
-
 func RecoverSealedFile(ctx context.Context, rp export.RecoveryParams, parallel uint, sealingResult string, sealingTemp string) error {
 	actorID, err := address.IDFromAddress(rp.Miner)
 	if err != nil {
@@ -211,17 +213,40 @@ func RecoverSealedFile(ctx context.Context, rp export.RecoveryParams, parallel u
 
 			log.Infof("Start recover sector(%d,%d), registeredSealProof: %d, ticket: %x", actorID, sector.SectorNumber, sector.SealProof, sector.Ticket)
 
-			log.Infof("Start running AP, sector (%d)", sector.SectorNumber)
-			pi, err := sb.AddPiece(context.TODO(), sid, nil, abi.PaddedPieceSize(rp.SectorSize).Unpadded(), nr.NewNullReader(abi.UnpaddedPieceSize(rp.SectorSize)))
-			if err != nil {
-				log.Errorf("Sector (%d) ,running AP  error: %v", sector.SectorNumber, err)
-			}
+			log.Infof("Start running AddPiece, sector (%d)", sector.SectorNumber)
 			var pieces []abi.PieceInfo
+
+			dcSectorCARFilePath := sector.PieceCID
+
+			carFile, err := os.ReadFile(dcSectorCARFilePath.String())
+
+			carReader, err := car.NewCarReader(bytes.NewReader(carFile))
+
+			block, err := carReader.Next()
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				log.Errorf("Error reading CAR block: %v", err)
+				return
+			}
+
+			data := block.RawData()
+			pieceSize := abi.PaddedPieceSize(uint64(len(data))).Unpadded()
+			reader := bytes.NewReader(data)
+
+			pi, err := sb.AddPiece(ctx, sid, nil, pieceSize, reader)
+			if err != nil {
+				log.Errorf("Error while adding piece to DC sector: %v", err)
+				return
+			}
+
 			pieces = append(pieces, pi)
-			log.Infof("Complete AP, sector (%d)", sector.SectorNumber)
+
+			log.Infof("Complete AddPiece, sector (%d)", sector.SectorNumber)
 
 			log.Infof("Start running PreCommit1, sector (%d)", sector.SectorNumber)
-			pc1o, err := sb.SealPreCommit1(context.TODO(), sid, abi.SealRandomness(sector.Ticket), []abi.PieceInfo{pi})
+			pc1o, err := sb.SealPreCommit1(context.TODO(), sid, abi.SealRandomness(sector.Ticket), pieces)
 			if err != nil {
 				log.Errorf("Sector (%d) , running PreCommit1  error: %v", sector.SectorNumber, err)
 			}
